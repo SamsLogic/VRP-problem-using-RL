@@ -50,33 +50,8 @@ epsilon_max = 1.0  # Maximum epsilon greedy parameter
 epsilon_interval = (epsilon_max - epsilon_min)
 
 batch_size = 32
+tau = 0.005
 max_steps_per_episode = 10000
-
-# When to train the network
-update_after_steps = 10
-
-# When to update the traget network
-update_target_network = 500
-
-# Number of state to take random action and observe output
-epsilon_random_steps = 10000
-
-# Number of states for exploration
-epsilon_greedy_steps = 50000
-
-# size of replay buffer
-replay_buffer_size = 5000
-
-state_history = []
-state_next_history = []
-done_history = []
-action_history = []
-rewards_history = []
-episode_reward_history = []
-state_space_history = []
-running_reward = np.zeros(technicians,dtype=np.float32)
-episode_count = 0
-step_count = 0
 
 class VRP_problem:
     def __init__(self,cusomter_list,duration_mat,distance_mat,days,minutes_per_day,technicians):
@@ -95,7 +70,7 @@ class VRP_problem:
         self._activity_time = np.zeros(technicians,dtype=np.float32)
         self._time_in_a_day = np.array([minutes_per_day]*(technicians),dtype=np.float32) 
         self._maximum_actions = 2776
-        self._states_travelled = {x:{y:[] for y in range(self._days_total)} for x in range(technicians)}
+        self._states_travelled = {x:[0] for x in range(technicians)}
         
     def reward(self):
         return self._reward
@@ -106,7 +81,7 @@ class VRP_problem:
         self._episode_end = np.zeros(self._technicians,dtype=np.int32)
         self._reward = np.zeros(self._technicians,dtype=np.float32)
         self._maximum_actions = 2776
-        self._states_travelled = {x:{y:[] for y in range(self._days_total)} for x in range(self._technicians)}
+        self._states_travelled = {x:[0] for x in range(technicians)}
         self._days = self._days_total
         self._action_comp = np.ones(self._technicians,dtype=np.float32)
         self._activity_time = np.zeros(self._technicians,dtype=np.float32)
@@ -128,16 +103,12 @@ class VRP_problem:
             return self._state,self._reward, self._episode_end, self._action_comp
         
         # Action is a dictionary of technician and customer to transit to
-        temp_reward = np.zeros(self._technicians,dtype=np.float32)
-        for technician, customer_id in action.items():
+        for technician, customer_id in enumerate(action):
             # Activity time calculation
-            if customer_id == 0:
-                break
             self._activity_time[technician] = self._duration_mat[self._state[technician]][customer_id]
             # State transition
             self._state[technician] = self._customer_id[customer_id]
-            self._states_travelled[technician][self._days_total-self._days].append(self._state[technician])
-            temp_reward[technician] = self._activity_time[technician]
+            self._states_travelled[technician].append(self._state[technician])
         
         self._time_consumed += self._activity_time
         
@@ -145,8 +116,6 @@ class VRP_problem:
             min_time = np.min(self._activity_time[np.nonzero(self._activity_time)])
         except:
             min_time = 0
-            self._episode_end = np.ones(self._technicians,dtype=np.int32)
-            return self._state,self._reward, self._episode_end, self._action_comp
             
         # Calculating time left in a day
         self._time_in_a_day = self._time_in_a_day - min_time
@@ -175,6 +144,12 @@ class VRP_problem:
             # print('min')
             # return self._state,self._reward, self._episode_end, self._action_comp       
         
+        if len(action) == len(set(action)):
+            self._reward = np.array([-333240]*self._technicians,dtype=np.float32)
+            print('same')
+            self._episode_end = np.ones(self._technicians,dtype=np.int32)
+            return self._state,self._reward, self._episode_end, self._action_comp
+            
         if self._days == 0:
             self._reward = np.array([-333240]*self._technicians,dtype=np.float32)
             self._episode_end = np.ones(self._technicians,dtype=np.int32)
@@ -187,21 +162,8 @@ class VRP_problem:
             return self._state,self._reward, self._episode_end, self._action_comp
         
         return self._state,self._reward, self._episode_end, self._action_comp
-
+    
 env = VRP_problem(data['Customer ID'].index,duration_mat,distance_mat,work_days_per_month,work_minutes_per_day,technicians)
-
-def get_data(states_travelled):
-    print("Timesheet Generated")
-    columns = ['Days']
-    data = pd.DataFrame(columns = columns)
-    data['Days'] = list(range(30))
-    d = np.empty(shape=(30,technicians),dtype=np.object)
-    for i in range(len(states_travelled)):
-        for j in data['Days'].values:
-            stri = ', '.join(str(x) for x in states_travelled[i][j])
-            d[j][i] = stri
-        data[f'Technician {i+1}'] = d[:,i]
-    return data
 
 # Environment simulation to check if the environment is coded properly
 def simulate_env(env,technicians):
@@ -222,17 +184,86 @@ def simulate_env(env,technicians):
 
 # simulate_env(env,technicians)
 
-def create_model(technicians):
+# size of replay buffer
+replay_buffer_size = 100
+
+state_history = []
+state_next_history = []
+done_history = []
+action_history = []
+rewards_history = []
+episode_reward_history = []
+running_reward = np.zeros(technicians,dtype=np.float32)
+episode_count = 0
+step_count = 0
+
+def actor_model_create(technicians):
     inp = L.Input(shape=(technicians,1))
-    x = L.Dense(32,activation = 'relu')(inp)
+    x = L.Dense(256,activation = 'relu')(inp)
     x = L.Dense(256,activation='relu')(x)
-    x = L.Dense(2777,activation = 'linear')(x)
+    x = L.Dense(1,activation = 'linear')(x)
+    
     return M.Model(inputs=inp,outputs=x)
 
-model = create_model(technicians)
-model_target = create_model(technicians)
+actor_model = actor_model_create(technicians)
+actor_model_target = actor_model_create(technicians)
 
-optimizer = O.Adam(learning_rate=0.001)
+def critic_model_create(technicians):
+    inp1 = L.Input(shape=(technicians,1))
+    x = L.Dense(16, activation='relu')(inp1)
+    x = L.Dense(32, activation='relu')(x)
+    
+    inp2 = L.Input(shape=(technicians,1))
+    x1 = L.Dense(32,activation='relu')(inp2)
+    
+    concat = L.Concatenate()([x,x1])
+    
+    out = L.Dense(256,activation='relu')(concat)
+    out = L.Dense(256,activation='relu')(out)
+    out= L.Dense(1)(out)
+    
+    model = M.Model([inp1,inp2],out)
+    return model
+
+critic_model = critic_model_create(technicians)
+critic_model_target = critic_model_create(technicians)
+
+def policy(state):
+    state = tf.expand_dims(state,1)
+    actions = tf.squeeze(actor_model(state))
+    legal_actions = np.clip(actions.numpy(),1,2776)
+    legal_actions = legal_actions.astype(np.int32)
+    return np.squeeze(legal_actions)
+
+@tf.function
+def update(state_batch, action_batch, reward_batch, next_state_batch):
+        
+        with tf.GradientTape() as tape:
+            target_actions = actor_model_target(next_state_batch, training=True)
+            y = reward_batch + gamma * tf.squeeze(critic_model_target(
+                [next_state_batch, target_actions], training=True
+            ))
+            critic_value = tf.squeeze(critic_model([state_batch, action_batch], training=True))
+            critic_loss = tf.math.reduce_mean(tf.math.square(y - critic_value))
+
+        critic_grad = tape.gradient(critic_loss, critic_model.trainable_variables)
+        critic_optimizer.apply_gradients(zip(critic_grad, critic_model.trainable_variables))
+
+        with tf.GradientTape() as tape:
+            actions = tf.squeeze(actor_model(state_batch, training=True))
+            critic_value = tf.squeeze(critic_model([state_batch, actions], training=True))
+            actor_loss = -tf.math.reduce_mean(critic_value)
+
+        actor_grad = tape.gradient(actor_loss, actor_model.trainable_variables)
+        actor_optimizer.apply_gradients(zip(actor_grad, actor_model.trainable_variables))
+
+@tf.function
+def update_target(target_weights, weights, tau):
+    for (a, b) in zip(target_weights, weights):
+        a.assign(b * tau + a * (1 - tau))
+
+actor_optimizer = O.Adam(learning_rate=0.1)
+critic_optimizer = O.Adam(learning_rate=0.1)
 loss_fn = Loss.Huber()
 
 # run episodes until solved
@@ -243,33 +274,9 @@ while True:
     state_space = np.arange(0,2777)
     for step in range(1, max_steps_per_episode):
         step_count += 1
-        action = np.zeros(technicians,dtype=np.int32)
-        state_space_history.append(list(state_space))
-        if step_count < epsilon_random_steps or epsilon > np.random.rand(1)[0]:
-            for i in np.where(action_comp == 1)[0]:
-                try:
-                    action[i] = np.random.choice(state_space[state_space>0])
-                    state_space[action[i]] = 0
-                except:
-                    pass
-        else:
-            state_ten = tf.convert_to_tensor(state)
-            state_ten = tf.expand_dims(state_ten,1)
-            state_ten = tf.expand_dims(state_ten,0)
-            action_probs = model(state_ten,training=False)
-            action_probs = action_probs[0]
-            for i in np.where(action_comp ==1)[0]:
-                temp_state_space = state_space.copy()
-                temp_state_space[temp_state_space > 0]  = 1
-                action_probs = action_probs*temp_state_space
-                action[i] = tf.argmax(action_probs[i],axis=-1).numpy()
-                state_space[action[i]] = 0
         
-        action_history.append(action)
-        action = {x:action[x] for x in np.where(action_comp == 1)[0]}
-        epsilon -= epsilon_interval/epsilon_greedy_steps
-        epsilon = max(epsilon, epsilon_min)
-        
+        action = policy(state)
+                
         state_next, reward, done, action_comp = env.step(action)
 
         episode_reward += reward
@@ -278,52 +285,31 @@ while True:
         state_next_history.append(list(state_next))
         done_history.append(done)
         rewards_history.append(reward)
-        
+        action_history.append(action)
         state = state_next
         
-        if step_count % update_after_steps == 0 and len(done_history) > batch_size:
-            indices = np.random.choice(range(len(done_history)), size=batch_size)
+        if len(done_history) > batch_size:
+            indices = np.arange(batch_size)
             state_sample = np.array([state_history[i] for i in indices])
             state_next_sample = np.array([state_next_history[i] for i in indices])
             rewards_sample = np.array([rewards_history[i] for i in indices])
             action_sample = np.array([action_history[i] for i in indices])
             done_sample = np.array([done_history[i] for i in indices])
-            future_rewards = model_target.predict(state_next_sample)
-            updated_q_values = rewards_sample + gamma * tf.reduce_max(future_rewards,axis=-1)
-            state_space_sample = np.array([state_space_history[i] for i in indices])
+
+            update(state_sample,action_sample,rewards_sample,state_next_sample)
+            update_target(actor_model_target.variables,actor_model.variables, tau)
+            update_target(critic_model_target.variables,critic_model.variables, tau)
             
-            updated_q_values = updated_q_values * (1 - done_sample) - done_sample
-            masks = np.zeros(shape=(batch_size,technicians,state_space_sample.shape[1]))
-            for i in range(len(state_space_sample)):
-                for j in range(10):
-                    masks[i][j] = state_space_sample[i]
-            
-            masks = tf.cast(masks,dtype=tf.float32)
-            
-            with tf.GradientTape() as tape:
-                q_values = model(state_sample)
-                q_action = tf.reduce_sum(tf.multiply(q_values, masks),axis=-1)
-                loss = loss_fn(updated_q_values,q_action)
-                
-            grads = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(grads,model.trainable_variables))
-        
-        if step_count % update_target_network == 0:
-            model_target.set_weights(model.get_weights())
-            # print(f"episode reward: {episode_reward} at episode {episode_count}, step count {step_count}")
-        
         if len(rewards_history) > replay_buffer_size:
             del rewards_history[:1]
             del state_history[:1]
             del state_next_history[:1]
             del action_history[:1]
             del done_history[:1]
-            del state_space_history[:1]
         if np.all(done == 1):
             break
 
-    print(epsilon)
-    print(f"episode reward: {np.mean(episode_reward)} at episode {episode_count}, step count {step_count}, time_consumed {max(env.time_consumed())}")
+    print(f"episode reward: {episode_reward} at episode {episode_count}, step count {step_count}, time_consumed {max(env.time_consumed())}")
     episode_reward_history.append(list(episode_reward))
     if len(episode_reward_history) > 100:
         del episode_reward_history[:1]
@@ -332,11 +318,9 @@ while True:
     # print(env.states_travelled())
     # print(sum(len(val) for _,val in env.states_travelled().items()))
     # Condition to consider the task solved
-    if np.all(episode_reward > -15555550000):  # Condition to consider the task solved
+    if np.all(episode_reward > 0):  # Condition to consider the task solved
         print("Solved at episode {}!".format(episode_count))
-        timesheet = get_data(env.states_travelled())
         break
 
-print(timesheet)
-timesheet.to_csv('timesheet.csv',index=False)
+
 
