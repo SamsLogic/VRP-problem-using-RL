@@ -1,6 +1,6 @@
 # VRP probelm using RL
 
-## Problem statement:
+## Problem statement
 
 Assume that you are made as a Service Manager for a maintenance company. A maintenance company typically consists of Technicians who drive around & attend maintenance jobs and Service Managers who manage & help these technicians to go around in an optimal way, driving as less distance as possible and attending as many maintenance jobs as possible.
 
@@ -12,11 +12,11 @@ Your task is to attempt finding a way that could automate your (Service Manager'
 
 The solution that you come up with might not handle all the use cases. The problem is even broader than what is mentioned above. So it's absolutely fine. What we like to see in the solution is your understanding of the problem and the approach you took to solve it.
 
-## Approach:
+## Approach
 
 To solve the above mentioned problem i used Multi Agent Deep Q Reinforcement learning approach in reinforcement learning we follow a feedback based learning where we have an actor that performs an action in a given environment and the feedback(reward) is given as a result of the action along with the observation from the environment. RL follows Markov decision process.
 
-### Assumptions:
+### Assumptions
 
 To solve the above problem we made certain assumption:
 1. The service provider have multiple technicians
