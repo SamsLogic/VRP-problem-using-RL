@@ -31,13 +31,13 @@ for i in range(len(duration_mat)):
 duration_mat = duration_mat.astype(np.int32)
 distance_mat = distance_mat.astype(np.int32)
 # Number of Technicians in the company
-technicians = 20
+technicians = 15
 
 # Days in a month
 work_days_per_month = 30
 
 # Per day 8 hours of work
-work_minutes_per_day = 8*60
+work_minutes_per_day = 10*60
 
 # Episode Length is a month
 episode_length = work_days_per_month
@@ -54,6 +54,7 @@ max_steps_per_episode = 10000
 
 class VRP_problem:
     def __init__(self,cusomter_list,duration_mat,distance_mat,days,minutes_per_day,technicians):
+        self._time_consumed = np.zeros(technicians,dtype=np.float32)
         self._state = np.zeros(technicians,dtype=np.int32)
         self._episode_end = np.zeros(technicians,dtype=np.int32)
         self._reward = np.zeros(technicians,dtype=np.float32)
@@ -74,6 +75,7 @@ class VRP_problem:
         return self._reward
         
     def reset(self):
+        self._time_consumed = np.zeros(technicians,dtype=np.float32)
         self._state = np.zeros(self._technicians,dtype=np.int32)
         self._episode_end = np.zeros(self._technicians,dtype=np.int32)
         self._reward = np.zeros(self._technicians,dtype=np.float32)
@@ -88,6 +90,9 @@ class VRP_problem:
     def reset_time(self):
         self._time_in_a_day = np.array([self._minutes_per_day]*(self._technicians),dtype=np.float32) 
     
+    def time_consumed(self):
+        return self._time_consumed
+    
     def states_travelled(self):
         return self._states_travelled
     
@@ -97,6 +102,7 @@ class VRP_problem:
             return self._state,self._reward, self._episode_end, self._action_comp
         
         # Action is a dictionary of technician and customer to transit to
+        temp_reward = np.zeros(self._technicians,dtype=np.float32)
         for technician, customer_id in action.items():
             # Activity time calculation
             if customer_id == 0:
@@ -105,7 +111,10 @@ class VRP_problem:
             # State transition
             self._state[technician] = self._customer_id[customer_id]
             self._states_travelled[technician].append(self._state[technician])
-            
+            temp_reward[technician] = self._activity_time[technician]
+        
+        self._time_consumed += self._activity_time
+        
         try:  
             min_time = np.min(self._activity_time[np.nonzero(self._activity_time)])
         except:
@@ -132,8 +141,9 @@ class VRP_problem:
         # Activity time updation
         self._activity_time = self._activity_time - min_time
         
-        temp_reward = (np.zeros(self._technicians,dtype=np.int32)+(min_time)*(self._action_comp))/(self._days+1)
-        self._reward -= temp_reward
+        # temp_reward = (np.zeros(self._technicians,dtype=np.int32)+(min_time)*(self._action_comp))/(self._days+1)
+        
+        self._reward = -self._time_consumed
         # if min_time == 0:
             # self._episode_end = np.ones(self._technicians,dtype=np.int32)
             # print('min')
@@ -176,18 +186,19 @@ def simulate_env(env,technicians):
 # my policy network would a Deep Q network with RNN layers to keep a track of previous states_tarvelled
 
 # When to train the network
-update_after_steps = 5
+update_after_steps = 10
 
 # When to update the traget network
 update_target_network = 500
 
 # Number of state to take random action and observe output
-epsilon_random_steps = 1000
+epsilon_random_steps = 10000
+
 # Number of states for exploration
-epsilon_greedy_steps = 100000
+epsilon_greedy_steps = 50000
 
 # size of replay buffer
-replay_buffer_size = 10000
+replay_buffer_size = 100
 
 state_history = []
 state_next_history = []
@@ -195,6 +206,7 @@ done_history = []
 action_history = []
 rewards_history = []
 episode_reward_history = []
+state_space_history = []
 running_reward = np.zeros(technicians,dtype=np.float32)
 episode_count = 0
 step_count = 0
@@ -209,7 +221,7 @@ def create_model(technicians):
 model = create_model(technicians)
 model_target = create_model(technicians)
 
-optimizer = O.Adam(learning_rate=0.01)
+optimizer = O.Adam(learning_rate=0.1)
 loss_fn = Loss.Huber()
 
 # run episodes until solved
@@ -220,7 +232,8 @@ while True:
     state_space = np.arange(0,2777)
     for step in range(1, max_steps_per_episode):
         step_count += 1
-        action = np.zeros(technicians,dtype=np.int32)        
+        action = np.zeros(technicians,dtype=np.int32)
+        state_space_history.append(list(state_space))
         if step_count < epsilon_random_steps or epsilon > np.random.rand(1)[0]:
             for i in np.where(action_comp == 1)[0]:
                 try:
@@ -251,10 +264,10 @@ while True:
         episode_reward += reward
         
         state_history.append(state)
-        state_next_history.append(state_next)
+        state_next_history.append(list(state_next))
         done_history.append(done)
-        
         rewards_history.append(reward)
+        
         state = state_next
         
         if step_count % update_after_steps == 0 and len(done_history) > batch_size:
@@ -265,12 +278,16 @@ while True:
             action_sample = np.array([action_history[i] for i in indices])
             done_sample = np.array([done_history[i] for i in indices])
             future_rewards = model_target.predict(state_next_sample)
-            
             updated_q_values = rewards_sample + gamma * tf.reduce_max(future_rewards,axis=-1)
+            state_space_sample = np.array([state_space_history[i] for i in indices])
             
             updated_q_values = updated_q_values * (1 - done_sample) - done_sample
-            print(updated_q_values)
-            masks = tf.one_hot(action_sample,2777)
+            masks = np.zeros(shape=(batch_size,technicians,state_space_sample.shape[1]))
+            for i in range(len(state_space_sample)):
+                for j in range(10):
+                    masks[i][j] = state_space_sample[i]
+            
+            masks = tf.cast(masks,dtype=tf.float32)
             
             with tf.GradientTape() as tape:
                 q_values = model(state_sample)
@@ -290,10 +307,11 @@ while True:
             del state_next_history[:1]
             del action_history[:1]
             del done_history[:1]
+            del state_space_history[:1]
         if np.all(done == 1):
             break
-    print(len(state_space[state_space>0]))
-    print(f"episode reward: {episode_reward} at episode {episode_count}, step count {step_count}")
+
+    print(f"episode reward: {episode_reward} at episode {episode_count}, step count {step_count}, time_consumed {max(env.time_consumed())}")
     episode_reward_history.append(list(episode_reward))
     if len(episode_reward_history) > 100:
         del episode_reward_history[:1]
