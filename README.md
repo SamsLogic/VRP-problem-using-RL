@@ -65,7 +65,7 @@ The timesheet includes daily schedule of a technician to reachout to the specifi
 
 ## How to run the code
 
-### Required repositores
+### Required packages
 
 1. Pandas (Version = 0.25.2)
 2. Numpy (Version = 1.19.5)
@@ -73,7 +73,7 @@ The timesheet includes daily schedule of a technician to reachout to the specifi
 4. Tensorflow (Version = 2.5.0)
 5. Tensorflow GPU (Version = 2.5.0)
 
-You can directly install the above mentioned repositories by using the command:
+You can directly install the above mentioned packages by using the command:
 
 `pip install -r requirements.txt --user`
 
